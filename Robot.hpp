@@ -8,12 +8,15 @@
 #ifndef Robot_hpp
 #define Robot_hpp
 
+#define TwoPI 6.283185307179586
 #define PI 3.141592653589793
 #define PIOver2 1.570796326794897
-#define TwoPI 6.283185307179586
+#define PIOver4 0.785398163397449
 
 #include <stdio.h>
 #include <deque>
+
+#define ENABLE_ACTUATOR_XL330
 
 #include <DynamixelShield.h>
 
@@ -124,6 +127,8 @@ typedef struct Robot {
     void walkTick();
     void stopTick();
 
+    void printPose(const Vector4 *iPose) const;
+    void printIKLocators() const;
     void printIKAngles() const;
 } Robot;
 

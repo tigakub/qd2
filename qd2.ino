@@ -3,6 +3,7 @@
 #include "Robot.hpp"
 #include "QDServer.hpp"
 #include "QDMessage.hpp"
+#include "LinearAlgebra.hpp"
 
 //#define ENABLE_SYNC
 
@@ -26,6 +27,15 @@ void setup() {
   delay(2000);
   // while(!Serial);
 
+  Matrix4 mat(Vector4::j, PIOver2);
+  Vector4 k(mat * Vector4::i);
+
+  Serial.print(k[0]);
+  Serial.print(", ");
+  Serial.print(k[1]);
+  Serial.print(", ");
+  Serial.println(k[2]);
+  
   Serial.println("qd online");
   Serial.println("joining wifi");
 
@@ -54,6 +64,7 @@ void loop() {
     switch(type) {
       case control:
         /*
+        QDCtrlMsg &ctrl = *((QDCtrlMsg *) udpRecvBuf);
         Serial.print("t: (");
         Serial.print(ctrl.translation[0]);
         Serial.print(", ");

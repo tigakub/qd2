@@ -21,6 +21,13 @@ using namespace ControlTableItem;
 float sigMin = 1.0 / (1.0 + exp(-12.0 * -0.5));
 float sigRange = 1.0 / (1.0 + exp(-12.0 * 0.5)) - sigMin;
 
+char *frontRight = "Front right: ";
+char *frontLeft = "Front left: ";
+char *backRight = "Back right: ";
+char *backLeft = "Back left: ";
+
+char *strings[] = { frontRight, frontLeft, backRight, backLeft };
+
 float sigmoid(float x) {
   return ((1.0 / (1.0 + (exp((x - 0.5) * -12.0)))) - sigMin) / sigRange;
 }
@@ -42,7 +49,8 @@ Robot::Limb::Limb(Robot::Limb::Configuration iConfig, const Vector4 &iRootOffset
   rootOffset(iRootOffset),
   l0(iHipToShoulder), l0sq(l0 * l0),
   l1(iShoulderToElbow), l1sq(l1 * l1),
-  l2(iElbowToToe), l2sq(l2 * l2)
+  l2(iElbowToToe), l2sq(l2 * l2),
+  hipAngle(0.0), shoulderAngle(0.0), elbowAngle(0.0)
 { }
         
 Vector4 Robot::Limb::normalizeTarget(const Vector4 &iTarget) const {
@@ -76,31 +84,34 @@ Vector4 Robot::Limb::denormalizeTarget(const Vector4 &iNormalized) const {
 }
 
 void Robot::Limb::calcIKAngles(const Vector4 &iTarget) {
-  float dsq = iTarget[0] * iTarget[0] + iTarget[1] * iTarget[1];
+  Vector4 nTarget = normalizeTarget(iTarget);
+  float dsq = nTarget[0] * nTarget[0] + nTarget[1] * nTarget[1];
   float d = sqrtf(dsq);
   float e = acosf(l0 / d);
   float n = 1.0 / d;
-  Vector4 unitp(iTarget[0] * n, iTarget[1] * n, 0.0);
+  Vector4 unitp(nTarget[0] * n, nTarget[1] * n, 0.0);
   Matrix4 mat(Vector4::k, e);
   Vector4 v(mat * unitp * l0);
   hipAngle = -atan2f(v[1], v[0]);
-  Vector4 p(iTarget - v);
+  Vector4 p(nTarget - v);
   dsq = p * p;
   d = sqrtf(dsq);
-  float at = asinf(iTarget[2] / d);
+  float at = asinf(nTarget[2] / d);
   float ae = (l1 + l2 > d) ? acosf(0.5 * (l1sq + l2sq - dsq) / (l1 * l2)) : PI;
   float a1 = (l1 + l2 > d) ? acosf(0.5 * (l1sq + dsq - l2sq) / (l1 * d)) : 0.0;
   
+  shoulderAngle = (at + a1) - PIOver2;
+  elbowAngle = PI - ae;
+
   switch(configuration) {
-    case frontLeft:
-    case backLeft:
-      shoulderAngle = at + a1 - PIOver2;
-      elbowAngle = PI - ae;
+    case frontRight:
+    case backRight:
+      hipAngle = -hipAngle;
+      shoulderAngle = -shoulderAngle;
+      elbowAngle = -elbowAngle;
       break;
     default:
-      hipAngle *= -1.0;
-      shoulderAngle = PIOver2 - (at + a1);
-      elbowAngle = ae - PI;
+      break;
   }
   
   hipAngle += PI;
@@ -145,10 +156,17 @@ Robot::Robot(float iHipToShoulder, float iShoulderToElbow, float iElbowToToe, co
 { }
 
 void Robot::begin() {
-  int i = 4;
-  while(i--) {
-    idlePose[0] = limbs[0].rootOffset - Vector4(0.0, currentBodyHeight, 0.0, 0.0);
+  Serial.println("Setting idle pose");
+  for(int i = 0; i < 4; i++) {
+    float hipToShoulder = (i % 2) ? limbs[i].l0 : -limbs[i].l0;
+    idlePose[i] = limbs[i].rootOffset - Vector4(hipToShoulder, currentBodyHeight, 0.0, 0.0);
+    currentPose[i] = idlePose[i];
   }
+  printPose(idlePose);
+  Serial.println("Calculating IK Angles");
+  setIKTargets(idlePose[0], idlePose[1], idlePose[2], idlePose[3]);
+  update();
+  emit();
 
   dxl.begin(57600);
 
@@ -157,8 +175,16 @@ void Robot::begin() {
     int i = 3;
     while(i--) {
       int id = j * 10 + i;
-      dxl.writeControlTableItem(RETURN_DELAY_TIME, id, 0);
       dxl.setOperatingMode(id, OP_POSITION);
+      dxl.writeControlTableItem(RETURN_DELAY_TIME, id, 0);
+      /* THIS DOESN'T WORK
+      Serial.print("Setting ");
+      Serial.print(id);
+      Serial.print(" to drive mode ");
+      uint8_t driveMode = 0x8; // (j % 2);
+      Serial.println(driveMode);
+      dxl.writeControlTableItem(DRIVE_MODE, id, driveMode);
+      */
       float pos = dxl.getPresentPosition(id, UNIT_DEGREE);
       dxl.setGoalPosition(id, pos, UNIT_DEGREE);
       dxl.torqueOn(id);
@@ -177,10 +203,16 @@ void Robot::setControl(const QDCtrlMsg &iCtrl) {
 }
 
 void Robot::setIKTargets(const Vector4 &iFrontRightTarget, const Vector4 &iFrontLeftTarget, const Vector4 &iBackRightTarget, const Vector4 &iBackLeftTarget) {
+  ikTargets[0] = iFrontRightTarget;
+  ikTargets[1] = iFrontLeftTarget;
+  ikTargets[2] = iBackRightTarget;
+  ikTargets[3] = iBackLeftTarget;
+  /*
   ikTargets[0] = limbs[0].normalizeTarget(iFrontRightTarget);
   ikTargets[1] = limbs[1].normalizeTarget(iFrontLeftTarget);
   ikTargets[2] = limbs[2].normalizeTarget(iBackRightTarget);
   ikTargets[3] = limbs[3].normalizeTarget(iBackLeftTarget);
+  */
 }
 
 void Robot::setAngles(const Vector4 &iHipAngles, const Vector4 &iShoulderAngles, const Vector4 &iElbowAngles) {
@@ -193,10 +225,14 @@ void Robot::setAngles(const Vector4 &iHipAngles, const Vector4 &iShoulderAngles,
 }
 
 void Robot::update() {
+  // Serial.println("IK Targets");
+  // printPose(ikTargets);
   int i = 4;
   while(i--) {
     limbs[i].calcIKAngles(ikTargets[i]);
   }
+  Serial.println("IK Angles");
+  printIKAngles();
 }
 
 void Robot::emit() {
@@ -229,7 +265,7 @@ void Robot::pullNextPose() {
     latchedTranslation[i] = currentTranslation[i];
   }
   latchedRotation = currentRotation;
-
+  
   rotationMatrix = Matrix4(Vector4::j, latchedRotation * 0.5);
   counterRotationMatrix = Matrix4(Vector4::j, -latchedRotation * 0.5);
 
@@ -313,6 +349,8 @@ void Robot::tick(float seconds) {
   }
 
   if(currentMode != idle) {
+    Matrix4 r(Vector4::j, latchedRotation * 0.5);
+
     float duration = latchedDuration;
     float stepHeight = latchedStepHeight;
 
@@ -341,19 +379,18 @@ void Robot::tick(float seconds) {
       backBell = bell(backProgress);
     }
 
-    ikTargets[0] = currentPose[0] * frontProgress + nextPose[0] * (1.0 - frontProgress);
-    ikTargets[1] = currentPose[1] * frontProgress + nextPose[1] * (1.0 - frontProgress);
-    ikTargets[2] = currentPose[2] * backProgress + nextPose[2] * (1.0 - backProgress);
-    ikTargets[3] = currentPose[3] * backProgress + nextPose[3] * (1.0 - backProgress);
+    for(int i = 0; i < 4; i++) {
+      ikTargets[i] = currentPose[i] * (1.0 - progress) + nextPose[i] * progress;
+    }
 
     switch(currentPole) {
       case frontRightBackLeft:
-        ikTargets[0].v[1] = frontBell * currentStepHeight;
-        ikTargets[3].v[1] = backBell * currentStepHeight;
+        ikTargets[0].v[1] += frontBell * currentStepHeight;
+        ikTargets[3].v[1] += backBell * currentStepHeight;
         break;
       case frontLeftBackRight:
-        ikTargets[1].v[1] = frontBell * currentStepHeight;
-        ikTargets[2].v[1] = backBell * currentStepHeight;
+        ikTargets[1].v[1] += frontBell * currentStepHeight;
+        ikTargets[2].v[1] += backBell * currentStepHeight;
         break;
     }
 
@@ -371,12 +408,14 @@ void Robot::tick(float seconds) {
     ikTargets[bNdx].v[1] = backBell * currentStepHeight;
     */
 
+    /*
     Serial.print(" ");
     Serial.print(progress);
 
     if(progress == 1.0) {
       Serial.println("\n");
     }
+    */
 
     currentProgress = progress;
   }
@@ -452,12 +491,27 @@ void Robot::stopTick() {
   }
 }
 
-char *frontRight = "Front right: ";
-char *frontLeft = "Front left: ";
-char *backRight = "Back right: ";
-char *backLeft = "Back left: ";
+void Robot::printPose(const Vector4 *iPose) const {
+  for(int i = 0; i < 4; i++) {
+    Serial.print(strings[i]);
+    Serial.print(iPose[i][0]);
+    Serial.print(", ");
+    Serial.print(iPose[i][1]);
+    Serial.print(", ");
+    Serial.println(iPose[i][2]);
+  }
+}
 
-char *strings[] = { frontRight, frontLeft, backRight, backLeft };
+void Robot::printIKLocators() const {
+  for(int i = 0; i < 4; i++) {
+    Serial.print(strings[i]);
+    Serial.print(nextPose[i][0]);
+    Serial.print(", ");
+    Serial.print(nextPose[i][1]);
+    Serial.print(", ");
+    Serial.println(nextPose[i][2]);
+  }
+}
 
 void Robot::printIKAngles() const {
   for(int i = 0; i < 4; i++) {
